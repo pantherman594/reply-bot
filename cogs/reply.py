@@ -5,55 +5,16 @@ from discord import Webhook, AsyncWebhookAdapter, Embed, File
 from urllib.request import Request, urlopen
 import aiohttp
 import os
+import re
 
 
 class Reply(Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.message_to_user = {}
-        self.emoji = b'\xe2\x9c\x89\xef\xb8\x8f'
         self.IMG_EXT = [".jpg", ".png", ".jpeg", ".gif", ".gifv"]
-        self.VIDEO_EXT = ['.mp4', '.avi', '.flv', '.mov', 'wmv']
-
-    @Cog.listener()
-    async def on_raw_reaction_add(self, payload):
-        """
-        When a reaction is added to any message the user and that message are linked
-        within a message_to_user dictionary
-        Users can only reply to one message at a time therefore if a user
-        reacts to a new message when their id is already within message_to_user dictionary,
-        the old message id gets overwritten by the new one
-
-        Multiple users can react to the same message
-        """
-        with open("emoji", "r", encoding="utf-8") as f:
-            self.emoji = f.read().encode('utf-8')
-        #   If user has a message queued up to be replied to it will be overwritten
-        if payload.user_id in self.message_to_user.keys():
-            del self.message_to_user[payload.user_id]
-        if payload.emoji.name == self.emoji.decode():
-            channel = self.bot.get_channel(payload.channel_id)
-            message = await channel.fetch_message(payload.message_id)
-            user = self.bot.get_user(payload.user_id)
-            self.message_to_user[user.id] = message.id
-
-    @Cog.listener()
-    async def on_raw_reaction_remove(self, payload):
-        """
-        If a user removes their reaction from a message his id
-        is removed from the message_to_user dict which removes
-        him from the reply queue
-
-        This also gets called when the bot itself removes reactions
-        but is ignored
-        """
-        #   payload.user_id actually returns the user whose emoji got removed
-        #   instead of returning the id of the user who removed it
-        with open("emoji", "r", encoding="utf-8") as f:
-            self.emoji = f.read().encode('utf-8')
-        if payload.emoji.name == self.emoji.decode():
-            if self.message_to_user.get(payload.user_id):
-                del self.message_to_user[payload.user_id]
+        self.VIDEO_EXT = [".mp4", ".avi", ".flv", ".mov", ".wmv"]
+        self.match_message = re.compile(r"^((> ([^\n]*)\n)+)((<@![0-9]{18}>)|(@[^#]+#0000)) ([\s\S]*)$")
+        self.strip_quote = re.compile(r"\n> ([^\n]*)")
 
     @Cog.listener()
     async def on_message(self, msg):
@@ -61,24 +22,38 @@ class Reply(Cog):
         When a message is sent check if that message is actually a reply
         to another message and if so delete it and turn it into a webhooked reply
         """
-        if msg.author.id in list(self.message_to_user.keys()):
+        if msg.author.bot:
+            return
+
+        reply_msg = None
+        search = self.match_message.search(msg.content)
+        if search:
+            message = "\n".join([line[2:] for line in search.group(1).split("\n")])[:-1]
+            if (search.group(5)):
+                sender = int(search.group(5)[3:-1])
+            else:
+                sender = None
+            content = search.group(7)
+
+            async for old_msg in msg.channel.history(limit=10000):
+                match_sender = (sender is None and old_msg.author.bot) or old_msg.author.id == sender
+                match_content = old_msg.content == message or self.strip_quote.sub("", "\n" + old_msg.content) == "\n" + message
+                if match_sender and match_content:
+                    reply_msg = old_msg
+                    msg.content = content
+                    break
+
+        if reply_msg:
             if msg.attachments:
                 req = Request(url=msg.attachments[0].url, headers={'User-Agent': 'Mozilla/5.0'})
                 webpage = urlopen(req).read()
                 with open(msg.attachments[0].filename, 'wb') as f:
                     f.write(webpage)
 
-        if msg.author.id in list(self.message_to_user.keys()):
-            message = await msg.channel.fetch_message(self.message_to_user[msg.author.id])
-            del self.message_to_user[msg.author.id]
+        if reply_msg:
             webhook = await msg.channel.create_webhook(name="Placeholder")
-            await self.send_message(msg.author, await self.create_embed(message.author, message), msg, webhook)
+            await self.send_message(msg.author, await self.create_embed(reply_msg.author, reply_msg), msg, webhook)
             await webhook.delete()
-            emoji = get(msg.channel.guild.emojis, name=self.emoji.decode())
-            try:
-                await message.remove_reaction(emoji, msg.author)
-            except InvalidArgument:
-                await message.remove_reaction(self.emoji.decode(), msg.author)
             await msg.delete()
 
     async def create_embed(self, author, author_message):
@@ -90,12 +65,10 @@ class Reply(Cog):
         :return: Embed object with the message contents and user info along with
         hyperlink to the message being replied to
         """
-        embed = Embed(color=author.color)
+        embed = Embed(colour=author.color)
 
         if author_message.clean_content:
-            embed.add_field(name=author.display_name, value=author_message.clean_content)
-        else:
-            embed.add_field(name=author.display_name, value="\u200b")
+            embed.add_field(name=author.display_name, value=f"{author_message.clean_content}\n[[jump]]({author_message.jump_url})")
 
         if author_message.attachments:
             for att in author_message.attachments:
@@ -119,8 +92,10 @@ class Reply(Cog):
                 embed.set_image(url="")
                 embed.add_field(name=author.display_name, value=author_message.clean_content)
 
-        embed.set_thumbnail(url=author.avatar_url_as(size=128, format='png'))
-        embed.add_field(name="\u200b", value=f"[⏫⏫⏫⏫]({author_message.jump_url})", inline=False)
+        embed.set_thumbnail(url=author.avatar_url_as(size=32, format='png'))
+
+        if not author_message.clean_content:
+            embed.add_field(name="\u200b", value=f"[[jump]]({author_message.jump_url})", inline=False)
 
         return embed
 
@@ -143,7 +118,11 @@ class Reply(Cog):
                         if ext in att.filename:
                             with open(att.filename, 'rb') as f:
                                 await webhook.send(embed=embed,
-                                                   content=message.content,
+                                                   wait=True,
+                                                   username=original_user.display_name,
+                                                   avatar_url=avatar_url,
+                                                   )
+                                await webhook.send(content=message.content,
                                                    username=original_user.display_name,
                                                    avatar_url=avatar_url,
                                                    file=File(f)
@@ -156,7 +135,11 @@ class Reply(Cog):
                             if ext in att.filename:
                                 with open(att.filename, 'rb') as f:
                                     await webhook.send(embed=embed,
-                                                       content=message.content,
+                                                       wait=True,
+                                                       username=original_user.display_name,
+                                                       avatar_url=avatar_url,
+                                                       )
+                                    await webhook.send(content=message.content,
                                                        username=original_user.display_name,
                                                        avatar_url=avatar_url,
                                                        file=File(f)
@@ -166,7 +149,11 @@ class Reply(Cog):
                         else:
                             with open(att.filename, 'rb') as f:
                                 await webhook.send(embed=embed,
-                                                   content=message.content,
+                                                   wait=True,
+                                                   username=original_user.display_name,
+                                                   avatar_url=avatar_url,
+                                                   )
+                                await webhook.send(content=message.content,
                                                    username=original_user.display_name,
                                                    avatar_url=avatar_url,
                                                    file=File(f)
@@ -175,21 +162,11 @@ class Reply(Cog):
                             return
 
             await webhook.send(embed=embed,
-                               content=message.content,
+                               wait=True,
                                username=original_user.display_name,
                                avatar_url=avatar_url
                                )
-
-    @command(aliases=['change', 'change_emoji', 'replace_emoji', 'emoji_change', 'emoji_replace'])
-    async def replace(self, ctx, emoji):
-        """
-        Used to replace the emoji you want to use as a reply button
-        :param ctx: Context of the command to get from which channel it was called
-        :param emoji: The string of the emoji (if it's a custom one strip it of the id part
-        :return: Writes the emoji in the emoji file
-        """
-        await ctx.message.channel.send(f"Reply emoji changed to {emoji}")
-        if '<' in emoji:
-            emoji = emoji.split(':')[1]
-        with open("emoji", "wb") as f:
-            f.write(emoji.encode('utf-8'))
+            await webhook.send(content=message.content,
+                               username=original_user.display_name,
+                               avatar_url=avatar_url
+                               )

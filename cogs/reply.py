@@ -13,7 +13,7 @@ class Reply(Cog):
         self.bot = bot
         self.IMG_EXT = [".jpg", ".png", ".jpeg", ".gif", ".gifv"]
         self.VIDEO_EXT = [".mp4", ".avi", ".flv", ".mov", ".wmv"]
-        self.match_message = re.compile(r"^((> ([^\n]*)\n)+)((<@![0-9]{18}>)|(@[^#]+#0000)) ([\s\S]*)$")
+        self.match_message = re.compile(r"^((> ([^\n]*)\n)+)((<@!?([0-9]{18})>)|(@[^#]+#0000)) ([\s\S]*)$")
         self.strip_quote = re.compile(r"\n> ([^\n]*)")
 
     @Cog.listener()
@@ -29,11 +29,11 @@ class Reply(Cog):
         search = self.match_message.search(msg.content)
         if search:
             message = "\n".join([line[2:] for line in search.group(1).split("\n")])[:-1]
-            if (search.group(5)):
-                sender = int(search.group(5)[3:-1])
+            if (search.group(6)):
+                sender = int(search.group(6))
             else:
                 sender = None
-            content = search.group(7)
+            content = search.group(8)
 
             async for old_msg in msg.channel.history(limit=10000):
                 match_sender = (sender is None and old_msg.author.bot) or old_msg.author.id == sender

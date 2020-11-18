@@ -6,6 +6,7 @@ from urllib.request import Request, urlopen
 import aiohttp
 import os
 import re
+from time import sleep
 
 
 class Reply(Cog):
@@ -13,7 +14,7 @@ class Reply(Cog):
         self.bot = bot
         self.IMG_EXT = [".jpg", ".png", ".jpeg", ".gif", ".gifv"]
         self.VIDEO_EXT = [".mp4", ".avi", ".flv", ".mov", ".wmv"]
-        self.match_message = re.compile(r"^((> ([^\n]*)\n)+)((<@!?([0-9]{18})>)|(@[^#]+#0000)) ([\s\S]*)$")
+        self.match_message = re.compile(r"^([\s\S]*)((> ([^\n]*)\n)+)((<@!?([0-9]{18})>)|(@[^#]+#0000))( ([\s\S]*))?$")
         self.strip_quote = re.compile(r"\n> ([^\n]*)")
 
     @Cog.listener()
@@ -28,12 +29,18 @@ class Reply(Cog):
         reply_msg = None
         search = self.match_message.search(msg.content)
         if search:
-            message = "\n".join([line[2:] for line in search.group(1).split("\n")])[:-1]
-            if (search.group(6)):
-                sender = int(search.group(6))
+            message = "\n".join([line[2:] for line in search.group(2).split("\n")])[:-1]
+            if (search.group(7)):
+                sender = int(search.group(7))
             else:
                 sender = None
-            content = search.group(8)
+
+            content = ""
+            if search.group(1):
+                content += search.group(1).strip() + " "
+            if search.group(10):
+                content += search.group(10).strip()
+            content = content.strip()
 
             async for old_msg in msg.channel.history(limit=10000):
                 match_sender = (sender is None and old_msg.author.bot) or old_msg.author.id == sender
@@ -167,6 +174,7 @@ class Reply(Cog):
                                avatar_url=avatar_url
                                )
             await webhook.send(content=message.content,
+                               wait=True,
                                username=original_user.display_name,
                                avatar_url=avatar_url
                                )
